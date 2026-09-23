@@ -998,3 +998,489 @@ function initScene(){
       }
     });
   }
+  for (l = 0; l < LAYERS - 1; l++){ connectLayer(l); }
+
+  var lp = new Float32Array(edges.length * 6), lc = new Float32Array(edges.length * 6);
+  edges.forEach(function(e, k){
+    lp.set([e.a.x, e.a.y, e.a.z, e.b.x, e.b.y, e.b.z], k * 6);
+    layerColor(e.l / (LAYERS - 1), tmp);
+    var f = 0.8;
+    lc.set([tmp.r * f, tmp.g * f, tmp.b * f, tmp.r * f, tmp.g * f, tmp.b * f], k * 6);
+  });
+  var lg = new THREE.BufferGeometry();
+  lg.setAttribute('position', new THREE.BufferAttribute(lp, 3));
+  lg.setAttribute('color', new THREE.BufferAttribute(lc, 3));
+  var lines = new THREE.LineSegments(lg, new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0.5, blending: THREE.AdditiveBlending, depthWrite: false }));
+  lines.frustumCulled = false;
+  scene.add(lines);
+
+  /* glowing points (nodes, signals, dust) */
+  var uniforms = { uScale: { value: 800 }, uTime: { value: 0 } };
+  var pointVS = [
+    'attribute vec3 aColor;',
+    'attribute float aSize;',
+    'uniform float uScale;',
+    'uniform float uTime;',
+    'varying vec3 vColor;',
+    'varying float vAlpha;',
+    'void main(){',
+    '  vec4 mv = modelViewMatrix * vec4(position, 1.0);',
+    '  float d = -mv.z;',
+    '  float tw = 1.0 + 0.18 * sin(uTime * 1.6 + position.x * 0.31 + position.y * 0.23 + position.z * 0.11);',
+    '  gl_PointSize = clamp(aSize * tw * uScale / max(d, 0.001), 0.0, 120.0);',
+    '  vColor = aColor;',
+    '  vAlpha = (1.0 - smoothstep(70.0, 230.0, d)) * smoothstep(2.0, 14.0, d);',
+    '  gl_Position = projectionMatrix * mv;',
+    '}'
+  ].join('\n');
+  var pointFS = [
+    'varying vec3 vColor;',
+    'varying float vAlpha;',
+    'void main(){',
+    '  float r = length(gl_PointCoord - vec2(0.5)) * 2.0;',
+    '  if (r > 1.0) discard;',
+    '  float core = pow(1.0 - r, 2.2);',
+    '  float hot = 1.0 - smoothstep(0.0, 0.35, r);',
+    '  gl_FragColor = vec4(vColor + vec3(hot * 0.6), core * vAlpha);',
+    '}'
+  ].join('\n');
+  function makePoints(pos, col, size){
+    var g = new THREE.BufferGeometry();
+    g.setAttribute('position', new THREE.BufferAttribute(pos, 3));
+    g.setAttribute('aColor', new THREE.BufferAttribute(col, 3));
+    g.setAttribute('aSize', new THREE.BufferAttribute(size, 1));
+    var m = new THREE.ShaderMaterial({ uniforms: uniforms, vertexShader: pointVS, fragmentShader: pointFS, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending });
+    var p = new THREE.Points(g, m);
+    p.frustumCulled = false;
+    return p;
+  }
+
+  var np = new Float32Array(nodes.length * 3), nc = new Float32Array(nodes.length * 3), ns = new Float32Array(nodes.length);
+  nodes.forEach(function(nd, k){
+    np[k * 3] = nd.x; np[k * 3 + 1] = nd.y; np[k * 3 + 2] = nd.z;
+    layerColor(nd.l / (LAYERS - 1), tmp);
+    nc[k * 3] = tmp.r; nc[k * 3 + 1] = tmp.g; nc[k * 3 + 2] = tmp.b;
+    ns[k] = 1.3 + Math.random() * 1.3;
+  });
+  scene.add(makePoints(np, nc, ns));
+
+  /* signals travelling along edges */
+  var PULSES = small ? 90 : 170;
+  var pp = new Float32Array(PULSES * 3), pc = new Float32Array(PULSES * 3), ps = new Float32Array(PULSES);
+  var pulses = [];
+  for (i = 0; i < PULSES; i++){
+    var ei = Math.floor(Math.random() * edges.length);
+    pulses.push({ e: ei, t: Math.random(), s: 0.5 + Math.random() * 0.6 });
+    layerColor(edges[ei].l / (LAYERS - 1), tmp);
+    pc[i * 3] = tmp.r * 0.5 + 0.5; pc[i * 3 + 1] = tmp.g * 0.5 + 0.5; pc[i * 3 + 2] = tmp.b * 0.5 + 0.5;
+    ps[i] = 1.8 + Math.random() * 1.0;
+  }
+  var pulsePoints = makePoints(pp, pc, ps);
+  scene.add(pulsePoints);
+  function placePulses(){
+    for (var k = 0; k < PULSES; k++){
+      var p = pulses[k], e = edges[p.e];
+      pp[k * 3] = lerp(e.a.x, e.b.x, p.t);
+      pp[k * 3 + 1] = lerp(e.a.y, e.b.y, p.t);
+      pp[k * 3 + 2] = lerp(e.a.z, e.b.z, p.t);
+    }
+    pulsePoints.geometry.attributes.position.needsUpdate = true;
+  }
+  placePulses();
+
+  /* drifting dust for depth */
+  var DUST = small ? 500 : 950;
+  var dp = new Float32Array(DUST * 3), dc = new Float32Array(DUST * 3), ds = new Float32Array(DUST);
+  for (i = 0; i < DUST; i++){
+    dp[i * 3] = (Math.random() - 0.5) * 230;
+    dp[i * 3 + 1] = (Math.random() - 0.5) * 140;
+    dp[i * 3 + 2] = 40 - Math.random() * (LAYERS * SPACING + 160);
+    dc[i * 3] = 0.55; dc[i * 3 + 1] = 0.5; dc[i * 3 + 2] = 0.85;
+    ds[i] = 0.25 + Math.random() * 0.45;
+  }
+  scene.add(makePoints(dp, dc, ds));
+
+  /* the light at the end of the network */
+  function glowTexture(){
+    var c = document.createElement('canvas'); c.width = c.height = 256;
+    var x = c.getContext('2d');
+    var g = x.createRadialGradient(128, 128, 0, 128, 128, 128);
+    g.addColorStop(0, 'rgba(255,255,255,1)');
+    g.addColorStop(0.25, 'rgba(255,255,255,0.55)');
+    g.addColorStop(0.6, 'rgba(255,255,255,0.12)');
+    g.addColorStop(1, 'rgba(255,255,255,0)');
+    x.fillStyle = g; x.fillRect(0, 0, 256, 256);
+    return new THREE.CanvasTexture(c);
+  }
+  var tex = glowTexture();
+  var orbZ = -(LAYERS - 1) * SPACING - 80;
+  function sprite(color, size){
+    var s = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, color: color, blending: THREE.AdditiveBlending, transparent: true, depthWrite: false, fog: false, opacity: 0 }));
+    s.scale.set(size, size, 1);
+    s.position.set(0, 0, orbZ);
+    scene.add(s);
+    return s;
+  }
+  var halo = sprite(0xff5c93, 200);
+  var core = sprite(0xffb627, 62);
+  var spark = sprite(0xffffff, 24);
+  var rings = [];
+  [[18, 0.9, 0.35], [27, 1.35, -0.5], [37, 0.6, 0.9]].forEach(function(cfg, k){
+    var m = new THREE.Mesh(new THREE.TorusGeometry(cfg[0], 0.14, 8, 160), new THREE.MeshBasicMaterial({ color: k === 1 ? 0xff5c93 : 0xffb627, transparent: true, opacity: 0, blending: THREE.AdditiveBlending, depthWrite: false, fog: false }));
+    m.position.set(0, 0, orbZ);
+    m.rotation.set(cfg[1], cfg[2], 0);
+    scene.add(m);
+    rings.push(m);
+  });
+
+  var camStart = 26, camEnd = orbZ + 70;
+
+  function resize(){
+    var w = window.innerWidth, h = window.innerHeight;
+    renderer.setSize(w, h, false);
+    camera.aspect = w / h;
+    camera.updateProjectionMatrix();
+  }
+  resize();
+  window.addEventListener('resize', debounce(resize, 100));
+
+  var time = 0;
+  return {
+    render: function(dt, progress, lag){
+      var p = progress;
+      if (!RM){ time += dt; }
+      uniforms.uTime.value = time;
+
+      var sway = RM ? 0 : 1;
+      var x = Math.sin(p * 14) * 2.4 * sway + state.smx * 2.6;
+      var y = Math.cos(p * 11) * 1.5 * sway + state.smy * 1.8;
+      var z = lerp(camStart, camEnd, p);
+      camera.position.set(x, y, z);
+      camera.lookAt(x * 0.35 + Math.sin(p * 9) * 3 * sway, y * 0.35, z - 40);
+      camera.rotation.z += Math.sin(p * 7) * 0.04 * sway;
+
+      var warp = RM ? 0 : clamp(Math.abs(lag) * 55, 0, 1);
+      camera.fov = 62 + warp * 12;
+      camera.updateProjectionMatrix();
+      uniforms.uScale.value = renderer.domElement.height / (2 * Math.tan(camera.fov * Math.PI / 360));
+
+      if (!RM){
+        for (var k = 0; k < PULSES; k++){
+          var pl = pulses[k];
+          pl.t += dt * pl.s;
+          if (pl.t >= 1){
+            var outs = edges[pl.e].b.out;
+            pl.e = outs.length ? outs[Math.floor(Math.random() * outs.length)] : Math.floor(Math.random() * byLayer[0].length * 2);
+            pl.t = 0;
+          }
+        }
+        placePulses();
+        rings[0].rotation.z += dt * 0.25;
+        rings[1].rotation.z -= dt * 0.18;
+        rings[2].rotation.y += dt * 0.12;
+      }
+
+      var vis = smooth(0.6, 1.0, p);
+      halo.material.opacity = vis * 0.55;
+      core.material.opacity = vis * 0.95;
+      spark.material.opacity = vis;
+      rings.forEach(function(m){ m.material.opacity = vis * 0.7; });
+
+      renderer.render(scene, camera);
+    }
+  };
+}
+
+var scene3d = null;
+try { scene3d = initScene(); } catch (err) { root.classList.add('no-webgl'); if (window.console) { console.warn('3D scene disabled:', err); } }
+
+/* ---------- Navigation and tour dock ---------- */
+var nav = $('#nav'), menuBtn = $('#menuBtn');
+var dock = $('#dock'), playBtn = $('#play'), timeEl = $('#time'), seek = $('#seek'), ticksEl = $('#ticks'), chapterEl = $('#chapter');
+var chapters = $$('[data-chapter]');
+var chapterTops = [];
+var tickEls = [];
+var activeIdx = -1;
+var navLinks = $$('a[data-goto]');
+
+menuBtn.addEventListener('click', function(){
+  var open = nav.classList.toggle('open');
+  menuBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+});
+document.addEventListener('keydown', function(e){
+  if (e.key === 'Escape' && nav.classList.contains('open')){ nav.classList.remove('open'); menuBtn.setAttribute('aria-expanded', 'false'); }
+});
+
+$$('a[href^="#"]').forEach(function(a){
+  a.addEventListener('click', function(e){
+    var id = a.getAttribute('href').slice(1);
+    var t = id ? document.getElementById(id) : null;
+    if (!t) { return; }
+    e.preventDefault();
+    stopPlay();
+    t.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'start' });
+    nav.classList.remove('open');
+    menuBtn.setAttribute('aria-expanded', 'false');
+  });
+});
+
+function buildTicks(){
+  ticksEl.innerHTML = '';
+  chapterTops = [];
+  tickEls = [];
+  chapters.forEach(function(sec, k){
+    var top = sec.getBoundingClientRect().top + window.scrollY;
+    chapterTops.push(top);
+    var ratio = clamp((top - window.innerHeight * 0.15) / state.maxScroll, 0, 1);
+    var b = document.createElement('button');
+    b.type = 'button';
+    b.className = 'tick';
+    b.style.setProperty('--r', ratio.toFixed(4));
+    var name = sec.getAttribute('data-chapter');
+    b.setAttribute('aria-label', 'Jump to ' + name);
+    b.title = name;
+    b.addEventListener('click', function(){
+      stopPlay();
+      sec.scrollIntoView({ behavior: RM ? 'auto' : 'smooth', block: 'start' });
+    });
+    ticksEl.appendChild(b);
+    tickEls.push(b);
+  });
+  activeIdx = -1;
+  updateUI();
+}
+
+function updateUI(){
+  var y = window.scrollY, vh = window.innerHeight, idx = 0;
+  for (var k = 0; k < chapterTops.length; k++){ if (chapterTops[k] <= y + vh * 0.45) { idx = k; } }
+  if (idx !== activeIdx){
+    activeIdx = idx;
+    var sec = chapters[idx];
+    chapterEl.textContent = sec.getAttribute('data-chapter');
+    tickEls.forEach(function(t, n){ t.classList.toggle('cur', n === idx); });
+    navLinks.forEach(function(a){ if (a.getAttribute('data-goto') === sec.id) { a.setAttribute('aria-current', 'true'); } else { a.removeAttribute('aria-current'); } });
+  }
+  var p = state.target;
+  seek.value = String(Math.round(p * 1000));
+  dock.style.setProperty('--p', p.toFixed(4));
+  timeEl.textContent = fmt(p * DURATION) + ' / ' + fmt(DURATION);
+  nav.classList.toggle('solid', y > 20);
+}
+
+function measure(){
+  state.maxScroll = Math.max(1, root.scrollHeight - window.innerHeight);
+  buildTicks();
+  readScroll();
+}
+function readScroll(){
+  state.target = clamp(window.scrollY / state.maxScroll, 0, 1);
+  state.dirty = true;
+}
+window.addEventListener('scroll', function(){ readScroll(); updateUI(); }, { passive: true });
+window.addEventListener('resize', debounce(measure, 150));
+window.addEventListener('load', measure);
+if (document.fonts && document.fonts.ready){ document.fonts.ready.then(measure); }
+if (window.ResizeObserver){ new ResizeObserver(debounce(measure, 200)).observe(document.body); }
+
+seek.addEventListener('input', function(){
+  stopPlay();
+  window.scrollTo(0, (Number(seek.value) / 1000) * state.maxScroll);
+});
+
+/* guided tour: auto-scroll like playing a video */
+var playPos = 0;
+function startPlay(){
+  if (state.playing) { return; }
+  if (window.scrollY >= state.maxScroll - 4){ window.scrollTo(0, 0); }
+  state.playing = true;
+  playPos = window.scrollY;
+  playBtn.classList.add('on');
+  playBtn.setAttribute('aria-pressed', 'true');
+  playBtn.setAttribute('aria-label', 'Pause guided tour');
+}
+function stopPlay(){
+  if (!state.playing) { return; }
+  state.playing = false;
+  playBtn.classList.remove('on');
+  playBtn.setAttribute('aria-pressed', 'false');
+  playBtn.setAttribute('aria-label', 'Play guided tour');
+}
+function advancePlay(dt){
+  playPos += (state.maxScroll / DURATION) * dt;
+  if (playPos >= state.maxScroll){
+    window.scrollTo(0, state.maxScroll);
+    stopPlay();
+    return;
+  }
+  window.scrollTo(0, playPos);
+}
+playBtn.addEventListener('click', function(){ if (state.playing) { stopPlay(); } else { startPlay(); } });
+window.addEventListener('wheel', stopPlay, { passive: true });
+window.addEventListener('touchstart', stopPlay, { passive: true });
+seek.addEventListener('pointerdown', stopPlay);
+window.addEventListener('keydown', function(e){
+  if (e.key === 'Tab' || e.target === playBtn) { return; }
+  stopPlay();
+});
+document.addEventListener('visibilitychange', function(){ if (document.hidden) { stopPlay(); } });
+
+/* ---------- Pointer parallax ---------- */
+var frame3d = $('#frame3d');
+if (FINE && !RM){
+  window.addEventListener('pointermove', function(e){
+    state.mx = (e.clientX / window.innerWidth - 0.5) * 2;
+    state.my = -(e.clientY / window.innerHeight - 0.5) * 2;
+    if (frame3d){
+      frame3d.style.setProperty('--ry', (state.mx * 14).toFixed(2) + 'deg');
+      frame3d.style.setProperty('--rx', (state.my * 10).toFixed(2) + 'deg');
+    }
+  }, { passive: true });
+}
+
+/* ---------- Project cards: tilt with the pointer ---------- */
+if (FINE && !RM){
+  $$('.card3d').forEach(function(card){
+    card.addEventListener('pointermove', function(e){
+      var r = card.getBoundingClientRect();
+      var px = (e.clientX - r.left) / r.width, py = (e.clientY - r.top) / r.height;
+      card.style.setProperty('--ry', ((px - 0.5) * 9).toFixed(2) + 'deg');
+      card.style.setProperty('--rx', ((0.5 - py) * 7).toFixed(2) + 'deg');
+      card.style.setProperty('--gx', (px * 100).toFixed(1) + '%');
+      card.style.setProperty('--gy', (py * 100).toFixed(1) + '%');
+    });
+    card.addEventListener('pointerleave', function(){
+      card.style.setProperty('--rx', '0deg');
+      card.style.setProperty('--ry', '0deg');
+    });
+  });
+}
+
+/* ---------- Panels lean back as they enter, flatten in the middle ---------- */
+var tiltEls = $$('.tilt-scroll');
+function tiltUpdate(){
+  if (RM) { return; }
+  var vh = window.innerHeight;
+  tiltEls.forEach(function(el){
+    var r = el.getBoundingClientRect();
+    if (r.bottom < -100 || r.top > vh + 100) { return; }
+    var center = r.top + Math.min(r.height, vh * 0.7) / 2;
+    var c = (center - vh / 2) / vh;
+    var rx = clamp(c * 9, -6, 6);
+    el.style.transform = 'perspective(1400px) rotateX(' + rx.toFixed(2) + 'deg)';
+  });
+}
+
+/* ---------- Result rings animate when they scroll into view ---------- */
+(function(){
+  var items = $$('.rings li');
+  if ('IntersectionObserver' in window){
+    var io = new IntersectionObserver(function(entries){
+      entries.forEach(function(en){ if (en.isIntersecting){ en.target.classList.add('in'); io.unobserve(en.target); } });
+    }, { threshold: 0.4 });
+    items.forEach(function(el){ io.observe(el); });
+  } else {
+    items.forEach(function(el){ el.classList.add('in'); });
+  }
+})();
+
+/* ---------- Skill sphere ---------- */
+(function(){
+  var cloud = $('#cloud');
+  var items = $$('li', cloud);
+  if (!items.length) { return; }
+  if (RM){ cloud.classList.add('static'); return; }
+
+  var n = items.length;
+  var pts = items.map(function(_, k){
+    var y = 1 - ((k + 0.5) / n) * 2;
+    var rr = Math.sqrt(1 - y * y);
+    var th = Math.PI * (1 + Math.sqrt(5)) * (k + 0.5);
+    return { x: Math.cos(th) * rr, y: y, z: Math.sin(th) * rr };
+  });
+
+  var ax = 0.28, ay = 0, inertia = 0, auto = 0.32, dragging = false, lastX = 0, lastY = 0, lastDX = 0, visible = true, R = 180;
+  function size(){ R = cloud.clientWidth * 0.36; }
+  size();
+  window.addEventListener('resize', debounce(size, 120));
+
+  cloud.addEventListener('pointerdown', function(e){
+    dragging = true; lastX = e.clientX; lastY = e.clientY; lastDX = 0; inertia = 0;
+    cloud.classList.add('dragging');
+    try { cloud.setPointerCapture(e.pointerId); } catch (err) {}
+  });
+  cloud.addEventListener('pointermove', function(e){
+    if (!dragging) { return; }
+    var dx = e.clientX - lastX, dy = e.clientY - lastY;
+    lastX = e.clientX; lastY = e.clientY; lastDX = dx;
+    ay += dx * 0.009;
+    if (e.pointerType === 'mouse'){ ax = clamp(ax + dy * 0.009, -1.2, 1.2); }
+  });
+  function release(){
+    if (!dragging) { return; }
+    dragging = false;
+    cloud.classList.remove('dragging');
+    inertia = lastDX * 0.009 * 60;
+  }
+  cloud.addEventListener('pointerup', release);
+  cloud.addEventListener('pointercancel', release);
+
+  if ('IntersectionObserver' in window){
+    new IntersectionObserver(function(entries){ visible = entries[0].isIntersecting; }).observe(cloud);
+  }
+
+  var prev = performance.now();
+  function tick(now){
+    var dt = Math.min(0.05, (now - prev) / 1000); prev = now;
+    if (visible){
+      if (!dragging){
+        ay += (auto + inertia) * dt;
+        inertia *= Math.exp(-dt * 2.4);
+      }
+      var cy = Math.cos(ay), sy = Math.sin(ay), cx = Math.cos(ax), sx = Math.sin(ax);
+      for (var k = 0; k < n; k++){
+        var p = pts[k];
+        var x1 = p.x * cy + p.z * sy;
+        var z1 = -p.x * sy + p.z * cy;
+        var y2 = p.y * cx - z1 * sx;
+        var z2 = p.y * sx + z1 * cx;
+        var depth = (z2 + 1) / 2;
+        var s = 0.72 + depth * 0.6;
+        items[k].style.transform = 'translate(-50%,-50%) translate(' + (x1 * R).toFixed(1) + 'px,' + (y2 * R).toFixed(1) + 'px) scale(' + s.toFixed(3) + ')';
+        items[k].style.opacity = (0.4 + depth * 0.6).toFixed(2);
+        items[k].style.zIndex = String(Math.round(depth * 100));
+      }
+    }
+    requestAnimationFrame(tick);
+  }
+  requestAnimationFrame(tick);
+})();
+
+/* ---------- Main loop ---------- */
+var last = performance.now();
+var lastRendered = -1;
+function frame(now){
+  var dt = Math.min(0.05, (now - last) / 1000); last = now;
+  if (state.playing) { advancePlay(dt); }
+
+  var k = RM ? 1 : 1 - Math.exp(-dt * 4.5);
+  var lag = state.target - state.progress;
+  state.progress += lag * k;
+  if (Math.abs(state.target - state.progress) < 0.00002) { state.progress = state.target; }
+  var m = 1 - Math.exp(-dt * 3);
+  state.smx += (state.mx - state.smx) * m;
+  state.smy += (state.my - state.smy) * m;
+
+  if (scene3d && (!RM || Math.abs(state.progress - lastRendered) > 0)){
+    scene3d.render(dt, state.progress, lag);
+    lastRendered = state.progress;
+  }
+  if (state.dirty){ tiltUpdate(); state.dirty = false; }
+  requestAnimationFrame(frame);
+}
+measure();
+requestAnimationFrame(frame);
+
+})();
+</script>
+</body>
+</html>
